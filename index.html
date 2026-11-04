@@ -62,14 +62,15 @@ const ROSTER = ['Test Teacher', 'Mr. McAlpine', 'Ms. Smith']; // spelling hint o
 const LOOKFORS = ['Learning objective posted','Students on task','Student discussion','Small group work','Questioning','Technology used','Differentiation'];
 
 const SYSTEM = `You are a voice assistant for a superintendent doing a classroom walkthrough. Be brief, friendly, fast.
-Collect: teacher name, room, period, subject, look-fors, engagement (Low/Moderate/High), evidence notes, one strength, follow-up needed (yes/no).
+Collect ALL of these. Every one is required, none may be blank: teacher name, room, period, subject, look-fors (at least one), engagement (Low/Moderate/High), evidence notes, one strength, follow-up needed (yes/no).
+Ask about evidence notes and strength explicitly. If he says none, nothing, or skips, store exactly "None noted".
 Any teacher name is allowed. Never list or read the roster aloud. Roster is only a spelling hint: ${ROSTER.join(', ')}. If what you heard is close to a roster name, use that spelling. Otherwise accept the name as heard.
 Repeat the teacher name aloud and ask "right?". If he corrects you, accept his correction. If name unclear, ask him to spell it.
 Ask one question at a time. Accept answers out of order. Skip anything already answered.
 Repeat room and period aloud digit by digit right after hearing them, ask "right?" before moving on.
 Do not read option lists unless he asks. Listen to what he says and map it to the allowed look-fors: ${LOOKFORS.join(', ')}. If unsure, ask which one he means.
-Final read-back must include teacher, room, period, subject, look-fors, engagement, follow-up. Never skip a field. Then ask "Correct?".
-Only after he says yes, call save_walkthrough once. When the function result comes back, follow its instruction and say the confirmation it gives. After that, say nothing more.`;
+Final read-back must include teacher, room, period, subject, look-fors, engagement, notes, strength, follow-up. Never skip a field. Then ask "Correct?".
+Only after he says yes, call save_walkthrough once. If the result says fields are missing, ask him for exactly those, then confirm and call again. When the result says saved, say the confirmation it gives. After that, say nothing more.`;
 
 const TOOLS = [{functionDeclarations:[{
   name:'save_walkthrough',
@@ -81,7 +82,7 @@ const TOOLS = [{functionDeclarations:[{
     engagement:{type:'STRING',enum:['Low','Moderate','High']},
     notes:{type:'STRING'}, strength:{type:'STRING'}, followUp:{type:'BOOLEAN'},
     highlight:{type:'STRING',description:'Max 2 sentences.'}
-  },required:['teacher','room','period','lookFors','engagement','highlight']}
+  },required:['teacher','room','period','subject','lookFors','engagement','notes','strength','followUp','highlight']}
 }]}];
 
 const $ = id => document.getElementById(id);
@@ -130,6 +131,16 @@ function flush(){
   active = []; nextT = 0;
 }
 
+const REQUIRED = ['teacher','room','period','subject','lookFors','engagement','notes','strength','followUp','highlight'];
+function missingFields(a){
+  return REQUIRED.filter(k => {
+    const v = a[k];
+    if(k === 'followUp') return typeof v !== 'boolean';
+    if(Array.isArray(v)) return v.length === 0;
+    return v === undefined || v === null || String(v).trim() === '';
+  });
+}
+  
 async function saveToServer(args){
   try{
     const res = await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pin:PIN,...args})});
@@ -209,6 +220,13 @@ async function start(){
       for(const fc of m.toolCall.functionCalls){
         if(saved || saving){
           responses.push({id:fc.id,name:fc.name,response:{result:'Already saved. Do not call again. Say nothing.'}});
+          continue;
+          
+        }
+        const miss = missingFields(fc.args || {});
+        if(miss.length){
+          log('Missing: ' + miss.join(', '));
+          responses.push({id:fc.id,name:fc.name,response:{result:'NOT saved. Missing fields: ' + miss.join(', ') + '. Ask him for each one. If he has nothing for notes or strength, use "None noted". Then read back and call save_walkthrough again.'}});
           continue;
         }
         saving = true;
