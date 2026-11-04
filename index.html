@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Walkthrough</title>
+<style>
+  body{font-family:sans-serif;max-width:560px;margin:24px auto;padding:0 16px}
+  button{font-size:28px;padding:28px;width:100%;border-radius:16px;border:0;background:#1a73e8;color:#fff}
+  button.on{background:#d93025}
+  #log{white-space:pre-wrap;margin-top:16px;font-size:14px;color:#333}
+</style>
+<input id="key" placeholder="Gemini API key" style="width:100%;padding:8px;margin-bottom:12px">
+<button id="go">Start walkthrough</button>
+<div id="log"></div>
+<script>
+const MODEL = 'gemini-3.1-flash-live-preview'; // fallback: gemini-2.5-flash-native-audio-preview-12-2025
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyJWtqEfWLwLqdfk6k_9QqTWpj6qtbvtWdFjMGN1WFyvE36KDUtE628pDC7Snq7NmWc/exec';
+const PIN = '1234';
+const ROSTER = ['Test Teacher', 'Mr. McAlpine', 'Ms. Smith']; // spelling hint only
+const LOOKFORS = ['Learning objective posted','Students on task','Student discussion','Small group work','Questioning','Technology used','Differentiation'];
+
+const SYSTEM = `You are a voice assistant for a superintendent doing a classroom walkthrough. Be brief, friendly, fast.
+Collect: teacher name, room, period, subject, look-fors, engagement (Low/Moderate/High), evidence notes, one strength, follow-up needed (yes/no).
+Any teacher name is allowed. Never list or read the roster aloud. Roster is only a spelling hint: ${ROSTER.join(', ')}. If what you heard is close to a roster name, use that spelling. Otherwise accept the name as heard.
+Repeat the teacher name aloud and ask "right?". If he corrects you, accept his correction. If name unclear, ask him to spell it.
+Ask one question at a time. Accept answers out of order. Skip anything already answered.
+Repeat room and period aloud digit by digit right after hearing them, ask "right?" before moving on.
+Do not read option lists unless he asks. Listen to what he says and map it to the allowed look-fors: ${LOOKFORS.join(', ')}. If unsure, ask which one he means.
+Final read-back must include teacher, room, period, subject, look-fors, engagement, follow-up. Never skip a field. Then ask "Correct?".
+Only after he says yes, call save_walkthrough. Then say "Saved." and say nothing more.`;
+
+const TOOLS = [{functionDeclarations:[{
+  name:'save_walkthrough',
+  description:'Save confirmed walkthrough. Call only after user confirms read-back.',
+  parameters:{type:'OBJECT',properties:{
+    teacher:{type:'STRING'},
+    room:{type:'STRING'}, period:{type:'STRING'}, subject:{type:'STRING'},
+    lookFors:{type:'ARRAY',items:{type:'STRING',enum:LOOKFORS}},
+    engagement:{type:'STRING',enum:['Low','Moderate','High']},
+    notes:{type:'STRING'}, strength:{type:'STRING'}, followUp:{type:'BOOLEAN'},
+    highlight:{type:'STRING',description:'Max 2 sentences.'}
+  },required:['teacher','room','period','lookFors','engagement','highlight']}
+}]}];
+
+const $ = id => document.getElementById(id);
+const log = t => { $('log').textContent += t + '\n'; };
+let lastWho = '';
+const say = (who, t) => {
+  if (who !== lastWho) { $('log').textContent += '\n' + who + ': '; lastWho = who; }
+  $('log').textContent += t;
+};
+let ws, micCtx, outCtx, proc, stream, nextT = 0, running = false, active = [];
+
+const b64 = buf => { let s=''; const u=new Uint8Array(buf); for(let i=0;i<u.length;i++) s+=String.fromCharCode(u[i]); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0)).buffer;
+
+function play(b64pcm){
+  const i16 = new Int16Array(unb64(b64pcm));
+  const f32 = Float32Array.from(i16, v => v/32768);
+  const buf = outCtx.createBuffer(1, f32.length, 24000);
+  buf.copyToChannel(f32, 0);
+  const src = outCtx.createBufferSource();
+  src.buffer = buf; src.connect(outCtx.destination);
+  src.onended = () => { active = active.filter(s => s !== src); };
+  active.push(src);
+  nextT = Math.max(nextT, outCtx.currentTime);
+  src.start(nextT); nextT += buf.duration;
+}
+function flush(){
+  active.forEach(s => { try{s.stop()}catch{} });
+  active = []; nextT = 0;
+}
+
+async function start(){
+  const key = $('key').value.trim();
+  if(!key) return alert('Enter API key');
+  outCtx = new AudioContext({sampleRate:24000});
+  stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+  micCtx = new AudioContext({sampleRate:16000});
+  const src = micCtx.createMediaStreamSource(stream);
+  proc = micCtx.createScriptProcessor(4096,1,1);
+  src.connect(proc); proc.connect(micCtx.destination);
+  proc.onaudioprocess = e => {
+    if(!ws || ws.readyState !== 1 || !ws.ready) return;
+    const f = e.inputBuffer.getChannelData(0);
+    const i16 = new Int16Array(f.length);
+    for(let i=0;i<f.length;i++) i16[i] = Math.max(-1,Math.min(1,f[i]))*32767;
+    ws.send(JSON.stringify({realtimeInput:{audio:{data:b64(i16.buffer),mimeType:'audio/pcm;rate=16000'}}}));
+  };
+
+  ws = new WebSocket(`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${key}`);
+  ws.onopen = () => ws.send(JSON.stringify({setup:{
+    model:`models/${MODEL}`,
+    generationConfig:{responseModalities:['AUDIO']},
+    systemInstruction:{parts:[{text:SYSTEM}]},
+    tools:TOOLS,
+    inputAudioTranscription:{}, outputAudioTranscription:{}
+  }}));
+  ws.onmessage = async ev => {
+    const m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text());
+    if(m.setupComplete){
+      ws.ready = true; log('connected');
+      ws.send(JSON.stringify({realtimeInput:{text:'Begin the walkthrough.'}}));
+    }
+    const sc = m.serverContent;
+    if(sc){
+      if(sc.interrupted) flush();
+      (sc.modelTurn?.parts||[]).forEach(p => p.inlineData && play(p.inlineData.data));
+      if(sc.inputTranscription) say('HIM', sc.inputTranscription.text);
+      if(sc.outputTranscription) say('AI', sc.outputTranscription.text);
+    }
+    if(m.toolCall){
+      const responses = [];
+      for(const fc of m.toolCall.functionCalls){
+        log('\nSAVING: ' + JSON.stringify(fc.args));
+        let result = 'saved';
+        try{
+          await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pin:PIN,...fc.args})});
+        }catch(e){ result = 'saved (response unreadable)'; }
+        responses.push({id:fc.id,name:fc.name,response:{result}});
+      }
+      ws.send(JSON.stringify({toolResponse:{functionResponses:responses}}));
+    }
+  };
+  ws.onerror = () => log('ws error');
+  ws.onclose = e => { log('\nclosed: ' + (e.reason||e.code)); stop(); };
+  running = true; $('go').textContent = 'Stop'; $('go').className = 'on';
+}
+
+function stop(){
+  running = false;
+  flush();
+  try{ws && ws.close()}catch{}
+  try{proc && proc.disconnect()}catch{}
+  try{stream && stream.getTracks().forEach(t => t.stop())}catch{}
+  $('go').textContent = 'Start walkthrough'; $('go').className = '';
+}
+
+$('go').onclick = () => running ? stop() : start();
+</script>
