@@ -55,6 +55,9 @@ summary{cursor:pointer;color:var(--muted);font-weight:600}
 const MODEL = 'gemini-3.1-flash-live-preview'; // fallback: gemini-2.5-flash-native-audio-preview-12-2025
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyJWtqEfWLwLqdfk6k_9QqTWpj6qtbvtWdFjMGN1WFyvE36KDUtE628pDC7Snq7NmWc/exec';
 const PIN = '1234';
+const GATE_IDLE = 0.015;  // mic level to count as speech when AI quiet
+const GATE_AI   = 0.05;   // higher bar to interrupt AI while it talks
+const HANG_FRAMES = 2;    // keep mic open ~0.5s after speech
 const ROSTER = ['Test Teacher', 'Mr. McAlpine', 'Ms. Smith']; // spelling hint only
 const LOOKFORS = ['Learning objective posted','Students on task','Student discussion','Small group work','Questioning','Technology used','Differentiation'];
 
@@ -142,20 +145,35 @@ async function start(){
   const src = micCtx.createMediaStreamSource(stream);
   proc = micCtx.createScriptProcessor(4096,1,1);
   src.connect(proc); proc.connect(micCtx.destination);
+    let hang = 0;
   proc.onaudioprocess = e => {
     if(!ws || ws.readyState !== 1 || !ws.ready) return;
     const f = e.inputBuffer.getChannelData(0);
-    const i16 = new Int16Array(f.length);
-    for(let i=0;i<f.length;i++) i16[i] = Math.max(-1,Math.min(1,f[i]))*32767;
+    let sum = 0;
+    for(let i=0;i<f.length;i++) sum += f[i]*f[i];
+    const rms = Math.sqrt(sum / f.length);
+    const thr = active.length ? GATE_AI : GATE_IDLE;
+    if(rms > thr) hang = HANG_FRAMES; else if(hang > 0) hang--;
+    const i16 = new Int16Array(f.length); // zeros = silence when gate closed
+    if(hang > 0){
+      for(let i=0;i<f.length;i++) i16[i] = Math.max(-1,Math.min(1,f[i]))*32767;
+    }
     ws.send(JSON.stringify({realtimeInput:{audio:{data:b64(i16.buffer),mimeType:'audio/pcm;rate=16000'}}}));
   };
-
   ws = new WebSocket(`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${key}`);
   ws.onopen = () => ws.send(JSON.stringify({setup:{
     model:`models/${MODEL}`,
     generationConfig:{responseModalities:['AUDIO']},
     systemInstruction:{parts:[{text:SYSTEM}]},
     tools:TOOLS,
+        realtimeInputConfig:{
+      automaticActivityDetection:{
+        startOfSpeechSensitivity:'START_SENSITIVITY_LOW',
+        endOfSpeechSensitivity:'END_SENSITIVITY_LOW',
+        prefixPaddingMs:200,
+        silenceDurationMs:900
+      }
+    },
     inputAudioTranscription:{}, outputAudioTranscription:{}
   }}));
   ws.onmessage = async ev => {
