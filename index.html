@@ -143,13 +143,31 @@ function missingFields(a){
   
 async function saveToServer(args){
   try{
-    const res = await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pin:PIN,...args})});
-    let j = null;
-    try{ j = await res.json(); }catch{}
-    if(j && j.ok === false) return {ok:false, error:j.error || 'server error'};
+    const res = await fetch(SCRIPT_URL,{
+      method:'POST',
+      headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify({pin:PIN,...args})
+    });
+
+    if(!res.ok){
+      return {ok:false,error:'HTTP error ' + res.status};
+    }
+
+    let j;
+    try{
+      j = await res.json();
+    }catch(e){
+      return {ok:false,error:'Server response could not be verified'};
+    }
+
+    if(!j || j.ok !== true){
+      return {ok:false,error:(j && j.error) || 'Server rejected the save'};
+    }
+
     return {ok:true};
+
   }catch(e){
-    return {ok:true, unverified:true}; // request likely sent, response unreadable
+    return {ok:false,error:'Network error. Save could not be verified.'};
   }
 }
 
