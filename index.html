@@ -69,11 +69,11 @@ Ask one question at a time. Accept answers out of order. Skip anything already a
 Repeat room and period aloud digit by digit right after hearing them, ask "right?" before moving on.
 Do not read option lists unless he asks. Listen to what he says and map it to the allowed look-fors: ${LOOKFORS.join(', ')}. If unsure, ask which one he means.
 Final read-back must include teacher, room, period, subject, look-fors, engagement, follow-up. Never skip a field. Then ask "Correct?".
-Only after he says yes, call save_walkthrough. Then say "Saved." and say nothing more.`;
+Only after he says yes, call save_walkthrough once. When the function result comes back, follow its instruction and say the confirmation it gives. After that, say nothing more.`;
 
 const TOOLS = [{functionDeclarations:[{
   name:'save_walkthrough',
-  description:'Save confirmed walkthrough. Call only after user confirms read-back.',
+  description:'Save confirmed walkthrough. Call only once, only after user confirms read-back.',
   parameters:{type:'OBJECT',properties:{
     teacher:{type:'STRING'},
     room:{type:'STRING'}, period:{type:'STRING'}, subject:{type:'STRING'},
@@ -86,7 +86,7 @@ const TOOLS = [{functionDeclarations:[{
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
-let lastWho = '', cur = null, saved = false;
+let lastWho = '', cur = null, saved = false, saving = false;
 const scrollDown = () => window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
 function say(who, t){
   if(who !== lastWho || !cur){
@@ -130,12 +130,24 @@ function flush(){
   active = []; nextT = 0;
 }
 
+async function saveToServer(args){
+  try{
+    const res = await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pin:PIN,...args})});
+    let j = null;
+    try{ j = await res.json(); }catch{}
+    if(j && j.ok === false) return {ok:false, error:j.error || 'server error'};
+    return {ok:true};
+  }catch(e){
+    return {ok:true, unverified:true}; // request likely sent, response unreadable
+  }
+}
+
 async function start(){
   let key = $('key').value.trim();
   if(!key){ try{ key = localStorage.getItem('gk') || ''; }catch{} }
   if(!key){ $('cfg').open = true; setStatus('Enter API key','err'); return; }
   try{ localStorage.setItem('gk', key); }catch{}
-  saved = false;
+  saved = false; saving = false;
   setStatus('Connecting…','busy');
   try{
     outCtx = new AudioContext({sampleRate:24000});
@@ -145,7 +157,8 @@ async function start(){
   const src = micCtx.createMediaStreamSource(stream);
   proc = micCtx.createScriptProcessor(4096,1,1);
   src.connect(proc); proc.connect(micCtx.destination);
-    let hang = 0;
+
+  let hang = 0;
   proc.onaudioprocess = e => {
     if(!ws || ws.readyState !== 1 || !ws.ready) return;
     const f = e.inputBuffer.getChannelData(0);
@@ -160,13 +173,14 @@ async function start(){
     }
     ws.send(JSON.stringify({realtimeInput:{audio:{data:b64(i16.buffer),mimeType:'audio/pcm;rate=16000'}}}));
   };
+
   ws = new WebSocket(`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${key}`);
   ws.onopen = () => ws.send(JSON.stringify({setup:{
     model:`models/${MODEL}`,
     generationConfig:{responseModalities:['AUDIO']},
     systemInstruction:{parts:[{text:SYSTEM}]},
     tools:TOOLS,
-        realtimeInputConfig:{
+    realtimeInputConfig:{
       automaticActivityDetection:{
         startOfSpeechSensitivity:'START_SENSITIVITY_LOW',
         endOfSpeechSensitivity:'END_SENSITIVITY_LOW',
@@ -176,6 +190,7 @@ async function start(){
     },
     inputAudioTranscription:{}, outputAudioTranscription:{}
   }}));
+
   ws.onmessage = async ev => {
     const m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text());
     if(m.setupComplete){
@@ -192,17 +207,29 @@ async function start(){
     if(m.toolCall){
       const responses = [];
       for(const fc of m.toolCall.functionCalls){
+        if(saved || saving){
+          responses.push({id:fc.id,name:fc.name,response:{result:'Already saved. Do not call again. Say nothing.'}});
+          continue;
+        }
+        saving = true;
         setStatus('Saving…','busy'); log('Saving walkthrough…');
-        let result = 'saved';
-        try{
-          await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pin:PIN,...fc.args})});
-        }catch(e){ result = 'saved (response unreadable)'; }
-        saved = true; setStatus('Saved ✓','done'); log('Saved. Doc and email on the way.');
+        const r = await saveToServer(fc.args);
+        saving = false;
+        let result;
+        if(r.ok){
+          saved = true;
+          setStatus('Saved ✓','done'); log('Saved to Google Sheet. Doc and email on the way.');
+          result = 'Saved successfully. Now say this: "Saved. It\'s added to the Google Sheet, and the Doc link is on its way to your email." Then stop talking.';
+        }else{
+          setStatus('Save failed','err'); log('Save failed: ' + r.error);
+          result = 'Save FAILED. Tell him it did not save and ask him to try again later. Do not claim it was saved.';
+        }
         responses.push({id:fc.id,name:fc.name,response:{result}});
       }
       ws.send(JSON.stringify({toolResponse:{functionResponses:responses}}));
     }
   };
+
   ws.onerror = () => setStatus('Connection error','err');
   ws.onclose = e => { if(e.code !== 1000) log('Connection closed (' + (e.reason||e.code) + ')'); stop(); };
   running = true; $('go').classList.add('on'); $('lbl').textContent = 'Tap to stop';
@@ -215,7 +242,9 @@ function stop(){
   try{proc && proc.disconnect()}catch{}
   try{stream && stream.getTracks().forEach(t => t.stop())}catch{}
   $('go').classList.remove('on'); $('lbl').textContent = 'Tap to start';
-  if(saved) setStatus('Saved ✓','done'); else if($('status').className.indexOf('err') < 0) setStatus('Ready','');
+  const cls = $('status').className;
+  if(saved) setStatus('Saved ✓','done');
+  else if(cls.indexOf('err') < 0) setStatus('Ready','');
 }
 
 $('go').onclick = () => running ? stop() : start();
