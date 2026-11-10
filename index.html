@@ -32,6 +32,13 @@ summary{cursor:pointer;color:var(--muted);font-weight:600}
 .b.ai{background:var(--card);border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:4px}
 .b.him{background:var(--navy);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
 .sys{align-self:center;font-size:12px;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--navy);border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.45}
+.card h3{margin:0 0 6px;font-size:15px;color:var(--navy)}
+.card p{margin:4px 0}
+.card .note{color:var(--muted);font-size:13px}
+.card ol{margin:6px 0 0;padding-left:20px}
+.card li{margin:7px 0}
+.sum{white-space:pre-wrap}
 </style>
 </head>
 <body>
@@ -59,35 +66,68 @@ const GATE_IDLE = 0.015;  // mic level to count as speech when AI quiet
 const GATE_AI   = 0.05;   // higher bar to interrupt AI while it talks
 const HANG_FRAMES = 2;    // keep mic open ~0.5s after speech
 const ROSTER = ['Test Teacher', 'Mr. McAlpine', 'Ms. Smith']; // spelling hint only
-const LOOKFORS = ['Learning objective posted','Students on task','Student discussion','Small group work','Questioning','Technology used','Differentiation'];
 
-const SYSTEM = `You are a voice assistant for a superintendent doing a classroom walkthrough. Be brief, friendly, fast.
-Collect ALL of these. Every one is required, none may be blank: teacher name, room, period, subject, look-fors (at least one), engagement (Low/Moderate/High), evidence notes, one strength, follow-up needed (yes/no).
-Ask about evidence notes and strength explicitly. If he says none, nothing, or skips, store exactly "None noted".
-Any teacher name is allowed. Never list or read the roster aloud. Roster is only a spelling hint: ${ROSTER.join(', ')}. If what you heard is close to a roster name, use that spelling. Otherwise accept the name as heard.
-Repeat the teacher name aloud and ask "right?". If he corrects you, accept his correction. If name unclear, ask him to spell it.
-Ask one question at a time. Accept answers out of order. Skip anything already answered.
-Repeat room and period aloud digit by digit right after hearing them, ask "right?" before moving on.
-Do not read option lists unless he asks. Listen to what he says and map it to the allowed look-fors: ${LOOKFORS.join(', ')}. If unsure, ask which one he means.
-Final read-back must include teacher, room, period, subject, look-fors, engagement, notes, strength, follow-up. Never skip a field. Then ask "Correct?".
-Only after he says yes, call save_walkthrough once. If the result says fields are missing, ask him for exactly those, then confirm and call again. When the result says saved, say the confirmation it gives. After that, say nothing more.`;
+const INTRO = 'These questions are district level. These questions help us understand how differentiated and personalized learning practices are showing up across classrooms and to monitor our progress toward the Purposeful Learning OKR strategy of empowering and supporting educators. DLT and ALT will have opportunities throughout the year to review this data, celebrate strengths, and evaluate progress.';
 
-const TOOLS = [{functionDeclarations:[{
-  name:'save_walkthrough',
-  description:'Save confirmed walkthrough. Call only once, only after user confirms read-back.',
-  parameters:{type:'OBJECT',properties:{
-    teacher:{type:'STRING'},
-    room:{type:'STRING'}, period:{type:'STRING'}, subject:{type:'STRING'},
-    lookFors:{type:'ARRAY',items:{type:'STRING',enum:LOOKFORS}},
-    engagement:{type:'STRING',enum:['Low','Moderate','High']},
-    notes:{type:'STRING'}, strength:{type:'STRING'}, followUp:{type:'BOOLEAN'},
-    highlight:{type:'STRING',description:'Max 2 sentences.'}
-  },required:['teacher','room','period','subject','lookFors','engagement','notes','strength','followUp','highlight']}
-}]}];
+const DIFF = [
+  ['Differentiated Instruction','Adjusted instruction, grouping, pacing, questioning, or support based on student data, readiness, and learning needs.'],
+  ['Differentiated Tasks','Students worked toward the same rigorous learning goal with varied levels of support, materials, pathways, or complexity.']
+];
+const PERS = [
+  ['Goal Setting','Students set, monitored, or adjusted goals based on their learning and progress.'],
+  ['Self-Reflection','Students reflected on their learning, growth, strengths, or next steps.'],
+  ['Student Voice','Students influenced what and how they learned by contributing to the topics, questions, direction, or pathways of the learning experience.'],
+  ['Collaboration','Students worked with others to deepen understanding, exchange ideas, or solve problems.'],
+  ['Varied Demonstration of Learning','Students demonstrated their understanding through different products, formats, or modes of expression.'],
+  ['Strengths-Based Learning','Students identified and used their strengths, interests, or preferred approaches to support their learning.'],
+  ['Portrait of a Comet Skills','Students intentionally practiced or reflected on adaptability, communication, empathy, integrity, or critical thinking.']
+];
+const DIFF_NAMES = DIFF.map(o => o[0]).concat('None');
+const PERS_NAMES = PERS.map(o => o[0]).concat('None');
+const numbered = a => a.map((o,i) => (i+1) + ' = ' + o[0]).join('; ');
+
+const SYSTEM = `You are a voice assistant for a school administrator doing a classroom walkthrough. Be brief, friendly, fast. Follow this exact order, one step at a time.
+Every answer is required. If he says "None", store "None". Never leave anything blank.
+Accept answers given out of order and skip anything already answered, but still call show_card before the matching question.
+
+STEP 1. Say: "Who is doing the walkthrough?" Get the admin name. Repeat it back and ask "right?". If he corrects you, accept it.
+STEP 2. Say: "Teacher name?" Get the teacher name. Repeat it back and ask "right?". Any name is allowed. Never read a roster aloud. Roster is only a spelling hint: ${ROSTER.join(', ')}. If name unclear, ask him to spell it.
+STEP 3. Call show_card with card "intro". Do NOT read it aloud. Do not mention it.
+STEP 4. Call show_card with card "differentiated". Then say ONLY: "What evidence of differentiated instruction is visible?" Do NOT read the options aloud. They are on screen. He can answer by name or number, several allowed. Numbers: ${numbered(DIFF)}. If he says None, use ["None"].
+STEP 5. Call show_card with card "personalized". Then say ONLY: "What evidence of personalized learning is visible?" Do NOT read the options aloud. He can answer by name or number, several allowed. Numbers: ${numbered(PERS)}. If he says None, use ["None"].
+STEP 6. Call show_card with card "example". Then say ONLY: "See an inspiring example? Share a brief overview." He talks free-form. Store what he says in a clean sentence or two. If he says None, store "None".
+STEP 7. Call show_card with card "summary", text = the full read-back with lines for Admin, Teacher, Differentiated instruction, Personalized learning, Inspiring example. Then read it aloud briefly and ask "Correct?". If he corrects something, fix it, call show_card summary again, read back again.
+STEP 8. Only after he says yes: say exactly "Please wait, I am currently saving the information." and then immediately call save_walkthrough once. When the result says saved, say exactly "Done. You may close the app." and then say nothing more. If the result says fields are missing, ask for exactly those, confirm, and call again. If the result says the save failed, tell him it did not save.
+
+Map selections only to these exact names. Differentiated: ${DIFF_NAMES.join(', ')}. Personalized: ${PERS_NAMES.join(', ')}.
+highlight = one or two plain sentences summarizing what he reported. Do not invent details.`;
+
+const TOOLS = [{functionDeclarations:[
+  {
+    name:'show_card',
+    description:'Show an info card on the screen. Call before asking each question.',
+    parameters:{type:'OBJECT',properties:{
+      card:{type:'STRING',enum:['intro','differentiated','personalized','example','summary']},
+      text:{type:'STRING',description:'Only for summary: the full read-back text.'}
+    },required:['card']}
+  },
+  {
+    name:'save_walkthrough',
+    description:'Save confirmed walkthrough. Call only once, only after he confirms the read-back.',
+    parameters:{type:'OBJECT',properties:{
+      admin:{type:'STRING'},
+      teacher:{type:'STRING'},
+      differentiated:{type:'ARRAY',items:{type:'STRING',enum:DIFF_NAMES}},
+      personalized:{type:'ARRAY',items:{type:'STRING',enum:PERS_NAMES}},
+      example:{type:'STRING',description:'Overview, or "None".'},
+      highlight:{type:'STRING',description:'1-2 sentences summarizing what he reported. No invented details.'}
+    },required:['admin','teacher','differentiated','personalized','example','highlight']}
+  }
+]}];
 
 const $ = id => document.getElementById(id);
 const logEl = $('log');
-let lastWho = '', cur = null, saved = false, saving = false;
+let lastWho = '', cur = null, saved = false, saving = false, closeAfter = false, finishing = false;
 const scrollDown = () => window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
 function say(who, t){
   if(who !== lastWho || !cur){
@@ -103,6 +143,21 @@ function log(t){
   logEl.appendChild(d); lastWho = ''; cur = null; scrollDown();
 }
 function setStatus(text, cls){ const s = $('status'); s.textContent = text; s.className = 'pill ' + cls; }
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const optList = arr => '<ol>' + arr.map(o => `<li><b>${esc(o[0])}</b> – ${esc(o[1])}</li>`).join('') + '</ol>';
+function showCard(card, text){
+  let h = '';
+  if(card === 'intro') h = '<h3>District level questions</h3><p>' + esc(INTRO) + '</p>';
+  else if(card === 'differentiated') h = '<h3>Differentiated instruction</h3><p class="note">Select all that apply. Say names or numbers. Say "None" to skip.</p>' + optList(DIFF);
+  else if(card === 'personalized') h = '<h3>Personalized learning</h3><p class="note">Select all that apply. Say names or numbers. Say "None" to skip.</p>' + optList(PERS);
+  else if(card === 'example') h = '<h3>Inspiring example</h3><p class="note">Overviews will be summarized and added to a shared resource collection. Say "None" to skip.</p>';
+  else if(card === 'summary') h = '<h3>Read-back</h3><div class="sum">' + esc(text || '') + '</div>';
+  else return;
+  const d = document.createElement('div');
+  d.className = 'card'; d.innerHTML = h;
+  logEl.appendChild(d); lastWho = ''; cur = null; scrollDown();
+}
 
 try{
   if(localStorage.getItem('gk')){ $('cfg').open = false; $('keystate').textContent = 'Settings: key saved on this device'; }
@@ -131,16 +186,23 @@ function flush(){
   active = []; nextT = 0;
 }
 
-const REQUIRED = ['teacher','room','period','subject','lookFors','engagement','notes','strength','followUp','highlight'];
+const REQUIRED = ['admin','teacher','differentiated','personalized','example','highlight'];
+function norm(a){
+  const fix = arr => {
+    arr = (Array.isArray(arr) ? arr : (arr ? [arr] : [])).filter(Boolean);
+    const real = arr.filter(x => x !== 'None');
+    return real.length ? real : (arr.length ? ['None'] : []);
+  };
+  return {...a, differentiated: fix(a.differentiated), personalized: fix(a.personalized)};
+}
 function missingFields(a){
   return REQUIRED.filter(k => {
     const v = a[k];
-    if(k === 'followUp') return typeof v !== 'boolean';
     if(Array.isArray(v)) return v.length === 0;
     return v === undefined || v === null || String(v).trim() === '';
   });
 }
-  
+
 async function saveToServer(args){
   try{
     const res = await fetch(SCRIPT_URL,{
@@ -148,27 +210,25 @@ async function saveToServer(args){
       headers:{'Content-Type':'text/plain'},
       body:JSON.stringify({pin:PIN,...args})
     });
-
-    if(!res.ok){
-      return {ok:false,error:'HTTP error ' + res.status};
-    }
-
+    if(!res.ok) return {ok:false,error:'HTTP error ' + res.status};
     let j;
-    try{
-      j = await res.json();
-    }catch(e){
-      return {ok:false,error:'Server response could not be verified'};
-    }
-
-    if(!j || j.ok !== true){
-      return {ok:false,error:(j && j.error) || 'Server rejected the save'};
-    }
-
+    try{ j = await res.json(); }
+    catch(e){ return {ok:false,error:'Server response could not be verified'}; }
+    if(!j || j.ok !== true) return {ok:false,error:(j && j.error) || 'Server rejected the save'};
     return {ok:true};
-
   }catch(e){
     return {ok:false,error:'Network error. Save could not be verified.'};
   }
+}
+
+function finishUp(){
+  if(finishing) return;
+  finishing = true;
+  const t0 = Date.now();
+  const iv = setInterval(() => {
+    const waited = Date.now() - t0;
+    if((active.length === 0 && waited > 800) || waited > 15000){ clearInterval(iv); stop(); }
+  }, 300);
 }
 
 async function start(){
@@ -176,7 +236,7 @@ async function start(){
   if(!key){ try{ key = localStorage.getItem('gk') || ''; }catch{} }
   if(!key){ $('cfg').open = true; setStatus('Enter API key','err'); return; }
   try{ localStorage.setItem('gk', key); }catch{}
-  saved = false; saving = false;
+  saved = false; saving = false; closeAfter = false; finishing = false;
   setStatus('Connecting…','busy');
   try{
     outCtx = new AudioContext({sampleRate:24000});
@@ -232,30 +292,36 @@ async function start(){
       (sc.modelTurn?.parts||[]).forEach(p => p.inlineData && play(p.inlineData.data));
       if(sc.inputTranscription) say('HIM', sc.inputTranscription.text);
       if(sc.outputTranscription) say('AI', sc.outputTranscription.text);
+      if(sc.turnComplete && closeAfter) finishUp();
     }
     if(m.toolCall){
       const responses = [];
       for(const fc of m.toolCall.functionCalls){
+        if(fc.name === 'show_card'){
+          showCard(fc.args && fc.args.card, fc.args && fc.args.text);
+          responses.push({id:fc.id,name:fc.name,response:{result:'shown'}});
+          continue;
+        }
         if(saved || saving){
           responses.push({id:fc.id,name:fc.name,response:{result:'Already saved. Do not call again. Say nothing.'}});
           continue;
-          
         }
-        const miss = missingFields(fc.args || {});
+        const args = norm(fc.args || {});
+        const miss = missingFields(args);
         if(miss.length){
           log('Missing: ' + miss.join(', '));
-          responses.push({id:fc.id,name:fc.name,response:{result:'NOT saved. Missing fields: ' + miss.join(', ') + '. Ask him for each one. If he has nothing for notes or strength, use "None noted". Then read back and call save_walkthrough again.'}});
+          responses.push({id:fc.id,name:fc.name,response:{result:'NOT saved. Missing fields: ' + miss.join(', ') + '. Ask him for each one. If he has nothing, use "None". Then read back and call save_walkthrough again.'}});
           continue;
         }
         saving = true;
-        setStatus('Saving…','busy'); log('Saving walkthrough…');
-        const r = await saveToServer(fc.args);
+        setStatus('Saving, please wait…','busy'); log('Saving walkthrough, please wait…');
+        const r = await saveToServer(args);
         saving = false;
         let result;
         if(r.ok){
-          saved = true;
-          setStatus('Saved ✓','done'); log('Saved to Google Sheet. Doc and email on the way.');
-          result = 'Saved successfully. Now say this: "Saved. It\'s added to the Google Sheet, and the Doc link is on its way to your email." Then stop talking.';
+          saved = true; closeAfter = true;
+          setStatus('Done ✓','done'); log('Saved to Google Sheet. Doc and email on the way.');
+          result = 'Saved successfully. Now say exactly: "Done. You may close the app." Then stop talking.';
         }else{
           setStatus('Save failed','err'); log('Save failed: ' + r.error);
           result = 'Save FAILED. Tell him it did not save and ask him to try again later. Do not claim it was saved.';
@@ -279,7 +345,7 @@ function stop(){
   try{stream && stream.getTracks().forEach(t => t.stop())}catch{}
   $('go').classList.remove('on'); $('lbl').textContent = 'Tap to start';
   const cls = $('status').className;
-  if(saved) setStatus('Saved ✓','done');
+  if(saved) setStatus('Done ✓','done');
   else if(cls.indexOf('err') < 0) setStatus('Ready','');
 }
 
