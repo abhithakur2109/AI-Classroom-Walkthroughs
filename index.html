@@ -29,12 +29,9 @@ h1{margin:0;font-size:22px;line-height:1.2}
 details{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:8px;font-size:14px}
 summary{cursor:pointer;color:var(--muted);font-weight:600}
 #key{width:100%;padding:10px;margin-top:10px;border:1px solid var(--line);border-radius:8px;font-size:15px}
-.opt{display:flex;align-items:center;gap:8px;margin-top:12px;color:#202124}
 #log{display:flex;flex-direction:column;gap:8px;margin-top:22px}
 .b{max-width:86%;padding:10px 14px;border-radius:16px;font-size:15px;line-height:1.4}
 .b.ai{background:var(--card);border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:4px}
-.b.him{background:var(--mason-light);color:#4a5a4f;border:1px dashed #b9d6c1;align-self:flex-end;border-bottom-right-radius:4px;font-style:italic;font-size:14px}
-.b.him::before{content:"rough transcript";display:block;font-size:10px;letter-spacing:.5px;text-transform:uppercase;opacity:.7;margin-bottom:2px;font-style:normal}
 .sys{align-self:center;font-size:12px;color:var(--muted)}
 .sys.warn{color:var(--red);font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--mason);border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.45}
@@ -63,7 +60,6 @@ summary{cursor:pointer;color:var(--muted);font-weight:600}
   <details id="cfg">
     <summary id="keystate">Settings</summary>
     <input id="key" type="password" placeholder="Gemini API key" autocomplete="off">
-    <label class="opt"><input type="checkbox" id="rough" checked> Show rough transcript of my speech</label>
   </details>
   <div id="log"></div>
 </div>
@@ -147,18 +143,15 @@ const $ = id => document.getElementById(id);
 const logEl = $('log');
 let lastWho = '', cur = null, saved = false, saving = false, closeAfter = false, finishing = false;
 let resultDelivered = false, awaitingSave = false, aiBuf = '', lastNudge = 0;
-let showRough = true;
-try{ showRough = localStorage.getItem('rough') !== '0'; }catch{}
-$('rough').checked = showRough;
-$('rough').onchange = () => { showRough = $('rough').checked; try{ localStorage.setItem('rough', showRough ? '1' : '0'); }catch{} };
 
 const scrollDown = () => window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+// Only AI text is shown. User speech never appears on screen.
 function say(who, t){
-  if(who === 'HIM' && !showRough){ lastWho = 'HIM'; cur = null; return; }
-  if(who !== lastWho || !cur){
+  if(who !== 'AI'){ lastWho = who; cur = null; return; } // user turn: just start a fresh AI bubble next time
+  if(lastWho !== 'AI' || !cur){
     cur = document.createElement('div');
-    cur.className = 'b ' + (who === 'HIM' ? 'him' : 'ai');
-    logEl.appendChild(cur); lastWho = who;
+    cur.className = 'b ai';
+    logEl.appendChild(cur); lastWho = 'AI';
   }
   cur.textContent += t; scrollDown();
 }
@@ -352,7 +345,7 @@ async function start(){
     if(sc){
       if(sc.interrupted){ flush(); aiBuf = ''; }
       (sc.modelTurn?.parts||[]).forEach(p => p.inlineData && play(p.inlineData.data));
-      if(sc.inputTranscription){ say('HIM', sc.inputTranscription.text); aiBuf = ''; }
+      if(sc.inputTranscription){ say('HIM', ''); aiBuf = ''; } // not displayed
       if(sc.outputTranscription){
         say('AI', sc.outputTranscription.text);
         aiBuf = (aiBuf + sc.outputTranscription.text).slice(-120);
