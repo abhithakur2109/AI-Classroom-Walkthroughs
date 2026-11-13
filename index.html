@@ -67,8 +67,8 @@ summary{cursor:pointer;color:var(--muted);font-weight:600}
 const MODEL = 'gemini-3.1-flash-live-preview'; // fallback: gemini-2.5-flash-native-audio-preview-12-2025
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyJWtqEfWLwLqdfk6k_9QqTWpj6qtbvtWdFjMGN1WFyvE36KDUtE628pDC7Snq7NmWc/exec';
 const PIN = '1234';
-const GATE_IDLE = 0.015;  // mic level to count as speech when AI quiet
-const GATE_AI   = 0.05;   // higher bar to interrupt AI while it talks
+const GATE_IDLE = 0.025;  // mic level to count as speech when AI quiet
+const GATE_AI   = 0.07;   // higher bar to interrupt AI while it talks
 const HANG_FRAMES = 2;    // keep mic open ~0.5s after speech
 let ROSTER = [];          // loaded from the Roster tab, spelling hint only
 
