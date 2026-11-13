@@ -45,7 +45,7 @@ summary{cursor:pointer;color:var(--muted);font-weight:600}
 <div class="wrap">
   <header>
     <h1>Classroom Walkthrough</h1>
-    <p class="sub">Tap. Talk. Doc and email done.</p>
+    <p class="sub">Tap. Talk. Sheet and feedback done.</p>
   </header>
   <span id="status" class="pill">Ready</span>
   <button id="go" aria-label="Start or stop walkthrough">
@@ -65,7 +65,7 @@ const PIN = '1234';
 const GATE_IDLE = 0.015;  // mic level to count as speech when AI quiet
 const GATE_AI   = 0.05;   // higher bar to interrupt AI while it talks
 const HANG_FRAMES = 2;    // keep mic open ~0.5s after speech
-const ROSTER = ['Test Teacher', 'Mr. McAlpine', 'Ms. Smith']; // spelling hint only
+const ROSTER = ['Abhi Thakur']; // spelling hint only
 
 const INTRO = 'These questions are district level. These questions help us understand how differentiated and personalized learning practices are showing up across classrooms and to monitor our progress toward the Purposeful Learning OKR strategy of empowering and supporting educators. DLT and ALT will have opportunities throughout the year to review this data, celebrate strengths, and evaluate progress.';
 
@@ -96,8 +96,11 @@ STEP 3. Call show_card with card "intro". Do NOT read it aloud. Do not mention i
 STEP 4. Call show_card with card "differentiated". Then say ONLY: "What evidence of differentiated instruction is visible?" Do NOT read the options aloud. They are on screen. He can answer by name or number, several allowed. Numbers: ${numbered(DIFF)}. If he says None, use ["None"].
 STEP 5. Call show_card with card "personalized". Then say ONLY: "What evidence of personalized learning is visible?" Do NOT read the options aloud. He can answer by name or number, several allowed. Numbers: ${numbered(PERS)}. If he says None, use ["None"].
 STEP 6. Call show_card with card "example". Then say ONLY: "See an inspiring example? Share a brief overview." He talks free-form. Store what he says in a clean sentence or two. If he says None, store "None".
-STEP 7. Call show_card with card "summary", text = the full read-back with lines for Admin, Teacher, Differentiated instruction, Personalized learning, Inspiring example. Then read it aloud briefly and ask "Correct?". If he corrects something, fix it, call show_card summary again, read back again.
-STEP 8. Only after he says yes: say exactly "Please wait, I am currently saving the information." and then immediately call save_walkthrough once. When the result says saved, say exactly "Done. You may close the app." and then say nothing more. If the result says fields are missing, ask for exactly those, confirm, and call again. If the result says the save failed, tell him it did not save.
+STEP 7. Call show_card with card "feedback". Then say ONLY: "Any 30-second feedback for the teacher?" He talks. Keep his words exactly as he said them. Remove only filler like um or uh. Do not add praise, do not rewrite, do not improve it. If he says None, store "None".
+STEP 8. Call show_card with card "additional". Then say ONLY: "Any additional information? This is not shared with the teacher." Store it as he said it. If he says None, store "None".
+STEP 9. If feedback is not "None": say ONLY "Send the feedback to the teacher?" Yes means sendToTeacher true. No means false. If feedback is "None": do NOT ask, set sendToTeacher false.
+STEP 10. Call show_card with card "summary", text = the full read-back with lines for Admin, Teacher, Differentiated instruction, Personalized learning, Inspiring example, 30-second feedback, Additional information, Send to teacher (yes or no, signed by the admin name). Then read it aloud briefly and ask "Correct?". If he corrects something, fix it, call show_card summary again, read back again.
+STEP 11. Only after he says yes: say exactly "Please wait, I am currently saving the information." and then immediately call save_walkthrough once. When the result comes back, say exactly what it tells you to say, then say nothing more. If the result says fields are missing, ask for exactly those, confirm, and call again. If the result says the save failed, tell him it did not save.
 
 Map selections only to these exact names. Differentiated: ${DIFF_NAMES.join(', ')}. Personalized: ${PERS_NAMES.join(', ')}.
 highlight = one or two plain sentences summarizing what he reported. Do not invent details.`;
@@ -107,7 +110,7 @@ const TOOLS = [{functionDeclarations:[
     name:'show_card',
     description:'Show an info card on the screen. Call before asking each question.',
     parameters:{type:'OBJECT',properties:{
-      card:{type:'STRING',enum:['intro','differentiated','personalized','example','summary']},
+      card:{type:'STRING',enum:['intro','differentiated','personalized','example','feedback','additional','summary']},
       text:{type:'STRING',description:'Only for summary: the full read-back text.'}
     },required:['card']}
   },
@@ -120,8 +123,11 @@ const TOOLS = [{functionDeclarations:[
       differentiated:{type:'ARRAY',items:{type:'STRING',enum:DIFF_NAMES}},
       personalized:{type:'ARRAY',items:{type:'STRING',enum:PERS_NAMES}},
       example:{type:'STRING',description:'Overview, or "None".'},
+      feedback:{type:'STRING',description:'His 30-second feedback for the teacher, his own words, filler removed. Or "None".'},
+      additional:{type:'STRING',description:'Additional info not shared with teacher, or "None".'},
+      sendToTeacher:{type:'BOOLEAN',description:'True only if he said yes to sending feedback. False if feedback is None.'},
       highlight:{type:'STRING',description:'1-2 sentences summarizing what he reported. No invented details.'}
-    },required:['admin','teacher','differentiated','personalized','example','highlight']}
+    },required:['admin','teacher','differentiated','personalized','example','feedback','additional','sendToTeacher','highlight']}
   }
 ]}];
 
@@ -152,6 +158,8 @@ function showCard(card, text){
   else if(card === 'differentiated') h = '<h3>Differentiated instruction</h3><p class="note">Select all that apply. Say names or numbers. Say "None" to skip.</p>' + optList(DIFF);
   else if(card === 'personalized') h = '<h3>Personalized learning</h3><p class="note">Select all that apply. Say names or numbers. Say "None" to skip.</p>' + optList(PERS);
   else if(card === 'example') h = '<h3>Inspiring example</h3><p class="note">Overviews will be summarized and added to a shared resource collection. Say "None" to skip.</p>';
+  else if(card === 'feedback') h = '<h3>30-second feedback</h3><p class="note">Shared with the teacher by email if you choose to send. Your words go out as you say them. Say "None" to skip.</p>';
+  else if(card === 'additional') h = '<h3>Additional information</h3><p class="note">Not shared with the teacher. Saved on the spreadsheet only. Say "None" to skip.</p>';
   else if(card === 'summary') h = '<h3>Read-back</h3><div class="sum">' + esc(text || '') + '</div>';
   else return;
   const d = document.createElement('div');
@@ -186,18 +194,22 @@ function flush(){
   active = []; nextT = 0;
 }
 
-const REQUIRED = ['admin','teacher','differentiated','personalized','example','highlight'];
+const REQUIRED = ['admin','teacher','differentiated','personalized','example','feedback','additional','sendToTeacher','highlight'];
+const isNone = s => String(s || '').trim().toLowerCase().replace(/[.!]/g,'') === 'none';
 function norm(a){
   const fix = arr => {
     arr = (Array.isArray(arr) ? arr : (arr ? [arr] : [])).filter(Boolean);
     const real = arr.filter(x => x !== 'None');
     return real.length ? real : (arr.length ? ['None'] : []);
   };
-  return {...a, differentiated: fix(a.differentiated), personalized: fix(a.personalized)};
+  const o = {...a, differentiated: fix(a.differentiated), personalized: fix(a.personalized)};
+  if(isNone(o.feedback)) o.sendToTeacher = false;
+  return o;
 }
 function missingFields(a){
   return REQUIRED.filter(k => {
     const v = a[k];
+    if(k === 'sendToTeacher') return typeof v !== 'boolean';
     if(Array.isArray(v)) return v.length === 0;
     return v === undefined || v === null || String(v).trim() === '';
   });
@@ -215,7 +227,7 @@ async function saveToServer(args){
     try{ j = await res.json(); }
     catch(e){ return {ok:false,error:'Server response could not be verified'}; }
     if(!j || j.ok !== true) return {ok:false,error:(j && j.error) || 'Server rejected the save'};
-    return {ok:true};
+    return {ok:true, emailStatus:j.emailStatus || ''};
   }catch(e){
     return {ok:false,error:'Network error. Save could not be verified.'};
   }
@@ -320,8 +332,16 @@ async function start(){
         let result;
         if(r.ok){
           saved = true; closeAfter = true;
-          setStatus('Done ✓','done'); log('Saved to Google Sheet. Doc and email on the way.');
-          result = 'Saved successfully. Now say exactly: "Done. You may close the app." Then stop talking.';
+          setStatus('Done ✓','done');
+          const es = r.emailStatus || '';
+          log('Saved to Google Sheet.' + (es ? ' Email: ' + es + '.' : ''));
+          if(es === 'No email match'){
+            result = 'Saved to the sheet, but no email address was found for that teacher. Say exactly: "Done. No email address was found for that teacher, so the feedback is saved on the sheet only. You may close the app." Then stop talking.';
+          }else if(es === 'Send failed'){
+            result = 'Saved to the sheet, but the email could not be sent. Say exactly: "Done. The email could not be sent, but everything is saved on the sheet. You may close the app." Then stop talking.';
+          }else{
+            result = 'Saved successfully. Say exactly: "Done. You may close the app." Then stop talking.';
+          }
         }else{
           setStatus('Save failed','err'); log('Save failed: ' + r.error);
           result = 'Save FAILED. Tell him it did not save and ask him to try again later. Do not claim it was saved.';
